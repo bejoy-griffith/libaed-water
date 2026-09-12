@@ -98,7 +98,9 @@ MODULE aed_geochemistry
       INTEGER  :: id_compd_vvel                                                ! sorbent _vvel diagnostic
       INTEGER  :: id_compd_frc(MAX_GC_COMPONENTS)                              ! sorbed fraction diagnostic
       INTEGER  :: id_compd_set(MAX_GC_COMPONENTS)                              ! sorbed settling flux diagnostic
+      INTEGER  :: id_compd_srp(MAX_GC_COMPONENTS)                              ! kinetic sorption rate diagnostic
       INTEGER  :: id_dz
+      AED_REAL :: Rsorp_gch(MAX_GC_COMPONENTS)                                 ! kinetic sorption rate (0 = equilibrium)
 
 
      CONTAINS
@@ -180,6 +182,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    AED_REAL          :: Kadsratio(MAX_GC_COMPONENTS)    = 1.05
    AED_REAL          :: Qmax(MAX_GC_COMPONENTS)         = 1.05
    AED_REAL          :: w_gch_ads(MAX_GC_COMPONENTS)    = zero_  ! m/day; -ve = settling
+   AED_REAL          :: Rsorp_gch(MAX_GC_COMPONENTS)    = zero_  ! /day relaxation to sorption
+                                                                 ! equilibrium; 0 => instantaneous
    CHARACTER(len=64) :: sorption_target_variable=''
 
 ! %% From Module Globals
@@ -212,7 +216,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                     ads_use_pH, &
                     Kadsratio, &
                     Qmax, &
-                    w_gch_ads
+                    w_gch_ads, &
+                    Rsorp_gch
 !-------------------------------------------------------------------------------
 !BEGIN
    print *,"        aed_geochemistry configuration"
@@ -233,6 +238,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    data%w_gch_ads(:) = zero_
    data%id_compd_frc(:) = -1
    data%id_compd_set(:) = -1
+   data%id_compd_srp(:) = -1
+   data%Rsorp_gch(:) = zero_
 
 ! Initialisation now done in declaration
 !  dis_initial = 0.0  ! default, overwritten by namelist
@@ -316,6 +323,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
         data%link_ads_vvel(i) = .FALSE.
         data%w_gch_ads(i) = w_gch_ads(i) / secs_per_day
      ENDIF
+     data%Rsorp_gch(i) = Rsorp_gch(i) / secs_per_day
    END DO
    component_link(num_components+1) = ph_link  ! Special pH var
    data%DissComp(num_components+1) = pH_initial
@@ -359,6 +367,10 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                data%id_compd_set(i) = aed_define_diag_variable(                &
                                  TRIM(data%listDissTransVars(i))//'_ads_set',  &
                                  'mmol/m**3/d','sorbed pool settling flux')
+               IF ( Rsorp_gch(i) > zero_ )                                     &
+                  data%id_compd_srp(i) = aed_define_diag_variable(             &
+                                 TRIM(data%listDissTransVars(i))//'_ads_srp',  &
+                                 'mmol/m**3/d','kinetic sorption rate')
             ENDIF
          ENDIF
 
@@ -545,6 +557,9 @@ SUBROUTINE aed_calculate_geochemistry(data,column,layer_idx)
 !LOCALS
    AED_REAL           :: reduction,oxidation
    AED_REAL           :: feii,feiii,h2s,so4,oxy,temp
+   AED_REAL           :: MeDis,MePar,sorption
+   INTEGER            :: i
+   AED_REAL,PARAMETER :: one_e_neg_ten = 1e-10
 !-------------------------------------------------------------------------------
 !BEGIN
 
@@ -598,6 +613,37 @@ SUBROUTINE aed_calculate_geochemistry(data,column,layer_idx)
       _FLUX_VAR_(data%id_so4) = _FLUX_VAR_(data%id_so4) + oxidation - reduction
 
    END IF
+
+   !-- 3. Sorption kinetics ----------------------------------------------------!
+   !   Components with Rsorp_gch>0 relax first-order toward the equilibrium
+   !   partition; components with Rsorp_gch=0 are re-partitioned instantly in
+   !   aed_equilibrate_geochemistry instead. NB with the Euler host solution
+   !   keep Rsorp_gch*dt <= 1 or the relaxation can overshoot.
+   IF (data%simMeAdsorption) THEN
+      DO i=1,data%num_comp
+         IF ( data%MeAdsorptionModel(i) == 0 ) CYCLE
+         IF ( data%component_linked(i) ) CYCLE
+         IF ( data%id_compd(i) <= 0 ) CYCLE
+         IF ( data%Rsorp_gch(i) <= zero_ ) CYCLE
+
+         CALL calcSorptionPartition(data,column,layer_idx,i,MeDis,MePar)
+
+         ! relax the dissolved pool toward its equilibrium value
+         ! (+ve = adsorbing, -ve = desorbing)
+         sorption = data%Rsorp_gch(i) *                                        &
+                            ( _STATE_VAR_(data%id_comp(i)) - MeDis )
+
+         _FLUX_VAR_(data%id_comp(i))  = _FLUX_VAR_(data%id_comp(i))  - sorption
+         _FLUX_VAR_(data%id_compd(i)) = _FLUX_VAR_(data%id_compd(i)) + sorption
+
+         IF ( data%id_compd_srp(i) > 0 ) &
+            _DIAG_VAR_(data%id_compd_srp(i)) = sorption * secs_per_day
+         IF ( data%id_compd_frc(i) > 0 ) &
+            _DIAG_VAR_(data%id_compd_frc(i)) = _STATE_VAR_(data%id_compd(i)) / &
+                   MAX( _STATE_VAR_(data%id_comp(i))                           &
+                       +_STATE_VAR_(data%id_compd(i)), one_e_neg_ten )
+      ENDDO
+   ENDIF
 
 END SUBROUTINE aed_calculate_geochemistry
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -688,7 +734,7 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
    AED_REAL,   DIMENSION(SIZE(data%PartComp))  :: partConcs
    ! Temporary variables
    INTEGER  :: i
-   AED_REAL :: pco2,nc, tss,MeDis,MePar,inDis,inPar, KMep,pH
+   AED_REAL :: pco2,nc, MeDis,MePar
    AED_REAL,PARAMETER :: one_e_neg_ten = 1e-10
 
 !-------------------------------------------------------------------------------
@@ -750,52 +796,24 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
 
 
 
-   !Adsorption
+   !Adsorption - instantaneous equilibrium partitioning. Components with
+   !Rsorp_gch>0 are excluded here; they relax kinetically toward the same
+   !partition in aed_calculate_geochemistry.
    IF( data%simMeAdsorption ) THEN
-   ! Retrieve current environmental conditions for the cell.
-     tss = zero_
-     IF(data%id_tss>0) THEN
-       tss = _STATE_VAR_(data%id_tss) ! externally supplied total susp solids
-     END IF
-
      DO i=1,data%num_comp
         IF ( data%MeAdsorptionModel(i) ==0 ) CYCLE
         IF ( data%component_linked(i) ) CYCLE   ! linked components have no _ads pool
         IF ( data%id_compd(i) <= 0 ) CYCLE      ! no sorbed state was registered
+        IF ( data%Rsorp_gch(i) > zero_ ) CYCLE  ! kinetic: handled in calculate
 
-      inDis = _STATE_VAR_(data%id_comp(i))
-      inPar = _STATE_VAR_(data%id_compd(i))
+        CALL calcSorptionPartition(data,column,layer_idx,i,MeDis,MePar)
 
-      ! Adjust local sorption coefficient for temperature and salinity
-      ! (only used by MeAdsorptionModel = 1, the linear Kd model)
-      KMep = data%KMep(i) * KMe_fT_fSal(data%theta_KMe, data%K_sal, sal, temp)
+        ! Set back to core variables
+        _STATE_VAR_(data%id_comp(i)) = MeDis
+        _STATE_VAR_(data%id_compd(i)) = MePar
 
-      ! Compute sorption
-      IF(data%ads_use_pH) THEN
-        pH = _STATE_VAR_(data%id_pH)
-
-        CALL MetalAdsorptionFraction(data%MeAdsorptionModel(i),              &  ! Dependencies
-                                  inDis+inPar,                          &
-                                  tss,                                 &
-                                  KMep,data%Kadsratio(i),data%Qmax(i),      &
-                                  MeDis,MePar,                       &  ! Returning variables
-                                  thepH=pH)
-
-      ELSE
-        CALL MetalAdsorptionFraction(data%MeAdsorptionModel(i),              &  ! Dependecies
-                                  inDis+inPar,                          &
-                                  tss,                                 &
-                                  KMep,data%Kadsratio(i),data%Qmax(i),      &
-                                  MeDis,MePar,                       &  ! Returning variables
-                                  temp_=temp,salt_=sal)
-      ENDIF
-
-      ! Set back to core variables
-      _STATE_VAR_(data%id_comp(i)) = MeDis
-      _STATE_VAR_(data%id_compd(i)) = MePar
-
-      IF ( data%id_compd_frc(i) > 0 ) &
-         _DIAG_VAR_(data%id_compd_frc(i)) = MePar / MAX(MeDis+MePar, one_e_neg_ten)
+        IF ( data%id_compd_frc(i) > 0 ) &
+           _DIAG_VAR_(data%id_compd_frc(i)) = MePar / MAX(MeDis+MePar, one_e_neg_ten)
      ENDDO
    ENDIF
 
@@ -1032,6 +1050,56 @@ END SUBROUTINE aed_inflow_update_geochemistry
  END FUNCTION calcSulfurOxidation
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+
+
+!###############################################################################
+SUBROUTINE calcSorptionPartition(data,column,layer_idx,i,MeDis,MePar)
+!-------------------------------------------------------------------------------
+! Compute the equilibrium partition (dissolved vs sorbed) of component i for
+! the current cell conditions. This is the target state shared by both
+! sorption pathways: applied directly by aed_equilibrate_geochemistry
+! (instantaneous) or relaxed toward by aed_calculate_geochemistry (kinetic).
+!-------------------------------------------------------------------------------
+!ARGUMENTS
+   CLASS (aed_geochemistry_data_t),INTENT(in) :: data
+   TYPE (aed_column_t),INTENT(inout) :: column(:)
+   INTEGER,INTENT(in) :: layer_idx, i
+   AED_REAL,INTENT(out) :: MeDis, MePar
+!
+!LOCALS
+   AED_REAL :: temp, sal, tss, pH, KMep, inDis, inPar
+!-------------------------------------------------------------------------------
+!BEGIN
+   temp = _STATE_VAR_(data%id_temp)
+   sal  = _STATE_VAR_(data%id_sal)
+
+   tss = zero_
+   IF (data%id_tss>0) tss = _STATE_VAR_(data%id_tss)  ! sorbent (TSS or particle)
+
+   inDis = _STATE_VAR_(data%id_comp(i))
+   inPar = _STATE_VAR_(data%id_compd(i))
+
+   ! Adjust local sorption coefficient for temperature and salinity
+   ! (only used by MeAdsorptionModel = 1, the linear Kd model)
+   KMep = data%KMep(i) * KMe_fT_fSal(data%theta_KMe, data%K_sal, sal, temp)
+
+   IF (data%ads_use_pH) THEN
+      pH = _STATE_VAR_(data%id_pH)
+      CALL MetalAdsorptionFraction(data%MeAdsorptionModel(i),                  &
+                                   inDis+inPar, tss,                           &
+                                   KMep, data%Kadsratio(i), data%Qmax(i),      &
+                                   MeDis, MePar,                               &
+                                   thepH=pH)
+   ELSE
+      CALL MetalAdsorptionFraction(data%MeAdsorptionModel(i),                  &
+                                   inDis+inPar, tss,                           &
+                                   KMep, data%Kadsratio(i), data%Qmax(i),      &
+                                   MeDis, MePar,                               &
+                                   temp_=temp, salt_=sal)
+   ENDIF
+
+END SUBROUTINE calcSorptionPartition
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 
 !###############################################################################
