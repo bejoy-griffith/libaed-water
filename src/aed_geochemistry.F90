@@ -96,6 +96,9 @@ MODULE aed_geochemistry
       AED_REAL :: w_gch_ads(MAX_GC_COMPONENTS)                                 ! Sorbed pool settling
       LOGICAL  :: link_ads_vvel(MAX_GC_COMPONENTS)                             ! adopt sorbent particle vvel
       INTEGER  :: id_compd_vvel                                                ! sorbent _vvel diagnostic
+      INTEGER  :: id_compd_frc(MAX_GC_COMPONENTS)                              ! sorbed fraction diagnostic
+      INTEGER  :: id_compd_set(MAX_GC_COMPONENTS)                              ! sorbed settling flux diagnostic
+      INTEGER  :: id_dz
 
 
      CONTAINS
@@ -228,6 +231,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    data%id_compd(:) = -1
    data%link_ads_vvel(:) = .FALSE.
    data%w_gch_ads(:) = zero_
+   data%id_compd_frc(:) = -1
+   data%id_compd_set(:) = -1
 
 ! Initialisation now done in declaration
 !  dis_initial = 0.0  ! default, overwritten by namelist
@@ -347,6 +352,14 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                                       zero_,                                   &
                                       minimum=min,                             &
                                       mobility=data%w_gch_ads(i))
+            IF ( diag_level>0 ) THEN
+               data%id_compd_frc(i) = aed_define_diag_variable(                &
+                                 TRIM(data%listDissTransVars(i))//'_ads_frc',  &
+                                 '-','sorbed fraction of total')
+               data%id_compd_set(i) = aed_define_diag_variable(                &
+                                 TRIM(data%listDissTransVars(i))//'_ads_set',  &
+                                 'mmol/m**3/d','sorbed pool settling flux')
+            ENDIF
          ENDIF
 
       ELSE
@@ -443,6 +456,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    ! Register environmental dependencies
    data%id_temp = aed_locate_global( 'temperature' )
    data%id_sal = aed_locate_global( 'salinity' )
+   data%id_dz = aed_locate_global( 'layer_ht' )
 
    !----------------------------------------------------------------------------
 
@@ -675,6 +689,7 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
    ! Temporary variables
    INTEGER  :: i
    AED_REAL :: pco2,nc, tss,MeDis,MePar,inDis,inPar, KMep,pH
+   AED_REAL,PARAMETER :: one_e_neg_ten = 1e-10
 
 !-------------------------------------------------------------------------------
 !BEGIN
@@ -778,7 +793,9 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
       ! Set back to core variables
       _STATE_VAR_(data%id_comp(i)) = MeDis
       _STATE_VAR_(data%id_compd(i)) = MePar
-      !ENDIF
+
+      IF ( data%id_compd_frc(i) > 0 ) &
+         _DIAG_VAR_(data%id_compd_frc(i)) = MePar / MAX(MeDis+MePar, one_e_neg_ten)
      ENDDO
    ENDIF
 
@@ -801,7 +818,7 @@ SUBROUTINE aed_mobility_geochemistry(data,column,layer_idx,mobility)
    AED_REAL,INTENT(inout) :: mobility(:)
 !
 !LOCALS
-   AED_REAL :: vvel
+   AED_REAL :: vvel, dz
    INTEGER  :: i
 !-------------------------------------------------------------------------------
 !BEGIN
@@ -810,6 +827,8 @@ SUBROUTINE aed_mobility_geochemistry(data,column,layer_idx,mobility)
    vvel = zero_
    IF ( data%id_compd_vvel > 0 ) &
       vvel = _DIAG_VAR_(data%id_compd_vvel) / secs_per_day
+
+   dz = _STATE_VAR_(data%id_dz)
 
    DO i=1,data%num_comp
       IF ( data%MeAdsorptionModel(i) == 0 ) CYCLE
@@ -821,6 +840,10 @@ SUBROUTINE aed_mobility_geochemistry(data,column,layer_idx,mobility)
       ELSE
          mobility(data%id_compd(i)) = data%w_gch_ads(i)
       ENDIF
+
+      IF ( data%id_compd_set(i) > 0 ) &
+         _DIAG_VAR_(data%id_compd_set(i)) = (mobility(data%id_compd(i))/dz)   &
+                          * _STATE_VAR_(data%id_compd(i)) * secs_per_day
    ENDDO
 
 END SUBROUTINE aed_mobility_geochemistry
