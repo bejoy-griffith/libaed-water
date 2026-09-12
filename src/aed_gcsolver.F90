@@ -605,8 +605,13 @@ CONTAINS
      !WQ(cellIndex,DICHM(:)) = REAL(dissConcs, r_wq)
      !WQ(cellIndex,PICHM(:)) = REAL(partConcs, r_wq)
 
-     !-- Charge Balance Condition
-     dissConcs(chargeBalCol) = hydrogenIon%Value
+     !-- Charge Balance Condition (mmol/m3 in the water-column path, to match
+     !-- the registered units; raw moles otherwise as per history)
+     IF(concMode == MMOLPERM3) THEN
+       dissConcs(chargeBalCol) = hydrogenIon%Value * REAL(1e6,GCHP)
+     ELSE
+       dissConcs(chargeBalCol) = hydrogenIon%Value
+     END IF
 
 
      !-- 4. Now update derived variable arrays
@@ -710,7 +715,11 @@ CONTAINS
      CALL setComponentTotalConc(dissConcs,partConcs,allComponents,concMode)
 
      ionStrength%Total = initialIonicStrength(allComponents)
-     hydrogenIon%Total = dissConcs(chargeBalCol)
+     IF(concMode == MMOLPERM3) THEN
+       hydrogenIon%Total = dissConcs(chargeBalCol) / REAL(1e6,GCHP)
+     ELSE
+       hydrogenIon%Total = dissConcs(chargeBalCol)
+     END IF
 
      CALL updateLogK(allSpecies,allComponents,cellTemp)
 
@@ -2791,9 +2800,18 @@ END SUBROUTINE UpdateUnknownsWithdX
      !-----------------------------------------------------------
      IF(components(componentIndex)%CompType == PUREPHASE) THEN
 
-       !-- Number of pure-phase moles
+       !-- Number of pure-phase moles. For the water-column path (MMOLPERM3)
+       !-- the WQ array holds minerals in mmol/m3, matching their registered
+       !-- units, so convert to moles as for MOLEBLNCE. Other concModes (CANDI)
+       !-- keep the historical raw-moles convention.
+       IF(concMode == MMOLPERM3) THEN
+         conversion = REAL(1e6,GCHP)
+       ELSE
+         conversion = REAL(1.0,GCHP)
+       END IF
        components(componentIndex)%ppData%moles = MAX(REAL(0.0,KIND=GCHP),      &
-                              particleConcs(components(componentIndex)%wqIndex))
+                              particleConcs(components(componentIndex)%wqIndex) &
+                              / conversion)
 
        !-- Natural Log of log K is the target saturation value
        components(componentIndex)%Total =                                      &
@@ -2909,8 +2927,13 @@ END SUBROUTINE UpdateUnknownsWithdX
 
        !-- Particulate chemistry array
        IF(components(componentIndex)%CompType == PUREPHASE) THEN
+         IF(concMode == MMOLPERM3) THEN
+           conversion = REAL(1e6,GCHP)     ! moles -> mmol/m3 (registered units)
+         ELSE
+           conversion = REAL(1.0,GCHP)     ! CANDI paths: historical raw moles
+         END IF
          particleConcs(components(componentIndex)%wqIndex) =                   &
-                                         components(componentIndex)%ppData%moles
+                          components(componentIndex)%ppData%moles * conversion
 
        !-- Normal dissolved component
        ELSE IF(components(componentIndex)%CompType == MOLEBLNCE) THEN
