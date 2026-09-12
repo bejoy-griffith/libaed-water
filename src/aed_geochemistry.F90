@@ -143,9 +143,9 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    LOGICAL           :: simEq = .TRUE.
    AED_REAL          :: min
    AED_REAL          :: dis_initial(MAX_GC_COMPONENTS) = 0.0
-   AED_REAL          :: Fsed_gch(MAX_GC_COMPONENTS)
-   AED_REAL          :: Ksed_gch_o2(MAX_GC_COMPONENTS)
-   AED_REAL          :: Ksed_gch_pH(MAX_GC_COMPONENTS)
+   AED_REAL          :: Fsed_gch(MAX_GC_COMPONENTS) = 0.0
+   AED_REAL          :: Ksed_gch_o2(MAX_GC_COMPONENTS) = 0.0  ! 0 => no O2 effect on Fsed_gch
+   AED_REAL          :: Ksed_gch_pH(MAX_GC_COMPONENTS) = 0.0  ! 0 => no pH effect on Fsed_gch
    AED_REAL          :: min_initial(MAX_GC_MINERALS) = 0.0
    AED_REAL          :: w_gch(MAX_GC_MINERALS)
    AED_REAL          :: pH_initial = 7.5
@@ -187,6 +187,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
 
    NAMELIST /aed_geochemistry/ speciation_dt, geochem_file,                    &
                     num_components, dis_components, component_link, Fsed_gch,  &
+                    Ksed_gch_o2, Ksed_gch_pH,                                  &
                     dis_initial, num_minerals, the_minerals, mineral_link,     &
                     w_gch, min_initial, pH_initial, speciesOutput, simEq,      &
                     Riron_red, theta_iron_red, Kiron_red,                      &
@@ -287,6 +288,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    DO i=1,nDissTransportables
      data%DissComp(i) = dis_initial(i)
      data%Fsed_gch(i) = Fsed_gch(i) / secs_per_day
+     data%Ksed_gch_o2(i) = Ksed_gch_o2(i)
+     data%Ksed_gch_pH(i) = Ksed_gch_pH(i)
    END DO
    component_link(num_components+1) = ph_link  ! Special pH var
    data%DissComp(num_components+1) = pH_initial
