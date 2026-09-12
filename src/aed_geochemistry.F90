@@ -324,7 +324,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    data%PartComp = zero_
    DO i=1,num_minerals
      data%PartComp(i) = min_initial(i)
-     data%w_gch(i) = w_gch(i)
+     data%w_gch(i) = w_gch(i) / secs_per_day
    END DO
 
    CALL InitialiseGCProperties(data%DissComp, data%PartComp, 2)
