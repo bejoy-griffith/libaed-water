@@ -93,6 +93,7 @@ MODULE aed_geochemistry
       INTEGER  :: MeAdsorptionModel(MAX_GC_COMPONENTS), resuspension
       LOGICAL  :: simMeAdsorption, ads_use_pH, ads_use_external_tss
       AED_REAL :: KMep(MAX_GC_COMPONENTS), Kadsratio(MAX_GC_COMPONENTS), Qmax(MAX_GC_COMPONENTS), theta_KMe, K_sal   ! Adsoprtion
+      AED_REAL :: w_gch_ads(MAX_GC_COMPONENTS)                                 ! Sorbed pool settling
 
 
      CONTAINS
@@ -173,6 +174,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    AED_REAL          :: K_sal       = zero_  ! 0   => no salinity correction of KMep
    AED_REAL          :: Kadsratio(MAX_GC_COMPONENTS)    = 1.05
    AED_REAL          :: Qmax(MAX_GC_COMPONENTS)         = 1.05
+   AED_REAL          :: w_gch_ads(MAX_GC_COMPONENTS)    = zero_  ! m/day; -ve = settling
    CHARACTER(len=64) :: sorption_target_variable=''
 
 ! %% From Module Globals
@@ -204,7 +206,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                     K_sal, &
                     ads_use_pH, &
                     Kadsratio, &
-                    Qmax
+                    Qmax, &
+                    w_gch_ads
 !-------------------------------------------------------------------------------
 !BEGIN
    print *,"        aed_geochemistry configuration"
@@ -296,6 +299,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
      data%Fsed_gch(i) = Fsed_gch(i) / secs_per_day
      data%Ksed_gch_o2(i) = Ksed_gch_o2(i)
      data%Ksed_gch_pH(i) = Ksed_gch_pH(i)
+     data%w_gch_ads(i) = w_gch_ads(i) / secs_per_day
    END DO
    component_link(num_components+1) = ph_link  ! Special pH var
    data%DissComp(num_components+1) = pH_initial
@@ -330,7 +334,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                                       TRIM(data%listDissTransVars(i))//'_ads', &
                                       'mmol/m**3','geochemistry',              &
                                       zero_,                                   &
-                                      minimum=min)
+                                      minimum=min,                             &
+                                      mobility=data%w_gch_ads(i))
          ENDIF
 
       ELSE
