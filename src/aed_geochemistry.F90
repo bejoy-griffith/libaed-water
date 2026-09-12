@@ -169,8 +169,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    INTEGER           :: MeAdsorptionModel(MAX_GC_COMPONENTS) = 0
    LOGICAL           :: ads_use_pH   = .FALSE.
    AED_REAL          :: KMep(MAX_GC_COMPONENTS) = 1.05
-   AED_REAL          :: theta_KMe   = 1.02
-   AED_REAL          :: K_sal        = 1000
+   AED_REAL          :: theta_KMe   = 1.0    ! 1.0 => no T correction of KMep
+   AED_REAL          :: K_sal       = zero_  ! 0   => no salinity correction of KMep
    AED_REAL          :: Kadsratio(MAX_GC_COMPONENTS)    = 1.05
    AED_REAL          :: Qmax(MAX_GC_COMPONENTS)         = 1.05
    CHARACTER(len=64) :: sorption_target_variable=''
@@ -200,6 +200,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                     sorption_target_variable, &
                     MeAdsorptionModel, &
                     KMep, &
+                    theta_KMe, &
+                    K_sal, &
                     ads_use_pH, &
                     Kadsratio, &
                     Qmax
@@ -255,6 +257,9 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    data%MeAdsorptionModel = MeAdsorptionModel
    data%KMep = KMep
    data%ads_use_pH = ads_use_pH
+   data%ads_use_external_tss = ads_use_external_tss
+   data%theta_KMe = theta_KMe
+   data%K_sal = K_sal
    data%Kadsratio = Kadsratio
    data%Qmax = Qmax
 
@@ -375,8 +380,19 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
      data%id_pH = aed_locate_variable(ph_link)
    ENDIF
 
-   IF ( simMeAdsorption )  &
-      data%id_tss = aed_locate_variable(sorption_target_variable)
+   IF ( simMeAdsorption ) THEN
+      IF ( ads_use_external_tss ) THEN
+         print *,'        Me adsorption is configured to use the host TSS'
+         data%id_tss = aed_locate_global('tss')
+      ELSEIF ( sorption_target_variable .NE. '' ) THEN
+         print *,'        Me is adsorbing to ',TRIM(sorption_target_variable)
+         data%id_tss = aed_locate_variable(sorption_target_variable)
+      ELSE
+         print *,'  ERROR Me adsorption is configured but no internal or ',   &
+                 'external sorption target is set'
+         STOP
+      ENDIF
+   ENDIF
 
    ! solution to get aed_carbon's pCO2 updated for atm exchange ...
    data%id_c_pco2 = aed_locate_variable(pco2_link)
@@ -707,8 +723,9 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
       inDis = _STATE_VAR_(data%id_comp(i))
       inPar = _STATE_VAR_(data%id_compd(i))
 
-      ! Adjust local sorption coefficients for temperature or salinity  (PO4AdsorptionModel = 1 only)
-      KMep = data%KMep(i) !* KMep_fT_fSal(data%theta_KMe, data%K_sal, salt, temp)
+      ! Adjust local sorption coefficient for temperature and salinity
+      ! (only used by MeAdsorptionModel = 1, the linear Kd model)
+      KMep = data%KMep(i) * KMe_fT_fSal(data%theta_KMe, data%K_sal, sal, temp)
 
       ! Compute sorption
       IF(data%ads_use_pH) THEN
@@ -717,7 +734,7 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
         CALL MetalAdsorptionFraction(data%MeAdsorptionModel(i),              &  ! Dependencies
                                   inDis+inPar,                          &
                                   tss,                                 &
-                                  data%KMep(i),data%Kadsratio(i),data%Qmax(i),      &
+                                  KMep,data%Kadsratio(i),data%Qmax(i),      &
                                   MeDis,MePar,                       &  ! Returning variables
                                   thepH=pH)
 
@@ -725,7 +742,7 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
         CALL MetalAdsorptionFraction(data%MeAdsorptionModel(i),              &  ! Dependecies
                                   inDis+inPar,                          &
                                   tss,                                 &
-                                  data%KMep(i),data%Kadsratio(i),data%Qmax(i),      &
+                                  KMep,data%Kadsratio(i),data%Qmax(i),      &
                                   MeDis,MePar,                       &  ! Returning variables
                                   temp_=temp,salt_=sal)
       ENDIF
@@ -1014,6 +1031,40 @@ MePar = zero_
 END IF
 
 END SUBROUTINE MetalAdsorptionFraction
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+!###############################################################################
+PURE AED_REAL FUNCTION KMe_fT_fSal(theta_KMe, K_sal, sal, temp)
+!-------------------------------------------------------------------------------
+! Temperature / salinity sensitivity of the linear sorption coefficient,
+! following the P-adsorption form of Zhang and Huang 2011 (as in
+! aed_phosphorus::Kpo4p_fT_fSal): sorption increases with temperature and
+! decreases with salinity. Defaults (theta_KMe=1, K_sal=0) are neutral.
+!-------------------------------------------------------------------------------
+!ARGUMENTS
+   AED_REAL,INTENT(in) :: theta_KMe ! theta for T dependence; 1.0 => no effect
+   AED_REAL,INTENT(in) :: K_sal     ! half-saturation of salinity; 0 => no effect
+   AED_REAL,INTENT(in) :: sal
+   AED_REAL,INTENT(in) :: temp
+   AED_REAL,PARAMETER  :: Topt = 45.
+!
+!LOCALS
+   AED_REAL :: fT, fSal
+!
+!-------------------------------------------------------------------------------
+!BEGIN
+   fT = (theta_KMe**(temp-Topt))
+
+   IF(K_sal==zero_)THEN
+     fSal = one_
+   ELSE
+     fSal = K_sal/(K_sal+sal)
+   ENDIF
+
+   KMe_fT_fSal = fT * fSal
+
+END FUNCTION KMe_fT_fSal
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 
