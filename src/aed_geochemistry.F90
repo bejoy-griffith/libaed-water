@@ -94,6 +94,8 @@ MODULE aed_geochemistry
       LOGICAL  :: simMeAdsorption, ads_use_pH, ads_use_external_tss
       AED_REAL :: KMep(MAX_GC_COMPONENTS), Kadsratio(MAX_GC_COMPONENTS), Qmax(MAX_GC_COMPONENTS), theta_KMe, K_sal   ! Adsoprtion
       AED_REAL :: w_gch_ads(MAX_GC_COMPONENTS)                                 ! Sorbed pool settling
+      LOGICAL  :: link_ads_vvel(MAX_GC_COMPONENTS)                             ! adopt sorbent particle vvel
+      INTEGER  :: id_compd_vvel                                                ! sorbent _vvel diagnostic
 
 
      CONTAINS
@@ -102,7 +104,7 @@ MODULE aed_geochemistry
          PROCEDURE :: calculate         => aed_calculate_geochemistry
          PROCEDURE :: calculate_benthic => aed_calculate_benthic_geochemistry
          PROCEDURE :: equilibrate       => aed_equilibrate_geochemistry
-!        PROCEDURE :: mobility          => aed_mobility_geochemistry
+         PROCEDURE :: mobility          => aed_mobility_geochemistry
 !        PROCEDURE :: light_extinction  => aed_light_extinction_geochemistry
          PROCEDURE :: inflow_update     => aed_inflow_update_geochemistry
 !        PROCEDURE :: delete            => aed_delete_geochemistry
@@ -224,6 +226,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    data%component_linked(:) = .FALSE.
    data%mineral_linked(:) = .FALSE.
    data%id_compd(:) = -1
+   data%link_ads_vvel(:) = .FALSE.
+   data%w_gch_ads(:) = zero_
 
 ! Initialisation now done in declaration
 !  dis_initial = 0.0  ! default, overwritten by namelist
@@ -299,7 +303,14 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
      data%Fsed_gch(i) = Fsed_gch(i) / secs_per_day
      data%Ksed_gch_o2(i) = Ksed_gch_o2(i)
      data%Ksed_gch_pH(i) = Ksed_gch_pH(i)
-     data%w_gch_ads(i) = w_gch_ads(i) / secs_per_day
+     IF ( w_gch_ads(i) < -999. ) THEN
+        ! sentinel: adopt the sorbent particle's settling velocity (_vvel link)
+        data%link_ads_vvel(i) = .TRUE.
+        data%w_gch_ads(i) = zero_
+     ELSE
+        data%link_ads_vvel(i) = .FALSE.
+        data%w_gch_ads(i) = w_gch_ads(i) / secs_per_day
+     ENDIF
    END DO
    component_link(num_components+1) = ph_link  ! Special pH var
    data%DissComp(num_components+1) = pH_initial
@@ -385,13 +396,25 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
      data%id_pH = aed_locate_variable(ph_link)
    ENDIF
 
+   data%id_compd_vvel = -1
    IF ( simMeAdsorption ) THEN
       IF ( ads_use_external_tss ) THEN
          print *,'        Me adsorption is configured to use the host TSS'
          data%id_tss = aed_locate_global('tss')
+         IF ( ANY(data%link_ads_vvel) ) THEN
+            print *,'  ERROR w_gch_ads vvel link requires an internal ',      &
+                    'sorption_target_variable, not external TSS'
+            STOP
+         ENDIF
       ELSEIF ( sorption_target_variable .NE. '' ) THEN
          print *,'        Me is adsorbing to ',TRIM(sorption_target_variable)
          data%id_tss = aed_locate_variable(sorption_target_variable)
+         IF ( ANY(data%link_ads_vvel) ) THEN
+            print *,'        _ads pools adopt settling of ',                  &
+                    TRIM(sorption_target_variable)//'_vvel'
+            data%id_compd_vvel =                                              &
+                aed_locate_variable(TRIM(sorption_target_variable)//'_vvel')
+         ENDIF
       ELSE
          print *,'  ERROR Me adsorption is configured but no internal or ',   &
                  'external sorption target is set'
@@ -760,6 +783,47 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
    ENDIF
 
 END SUBROUTINE aed_equilibrate_geochemistry
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+!###############################################################################
+SUBROUTINE aed_mobility_geochemistry(data,column,layer_idx,mobility)
+!-------------------------------------------------------------------------------
+! Set vertical movement of the sorbed (_ads) pools (+ve up; -ve down).
+! Components with link_ads_vvel adopt the sorbent particle's _vvel diagnostic;
+! others keep their constant w_gch_ads. Mineral mobilities are define-time
+! constants and are not touched here.
+!-------------------------------------------------------------------------------
+!ARGUMENTS
+   CLASS (aed_geochemistry_data_t),INTENT(in) :: data
+   TYPE (aed_column_t),INTENT(inout) :: column(:)
+   INTEGER,INTENT(in) :: layer_idx
+   AED_REAL,INTENT(inout) :: mobility(:)
+!
+!LOCALS
+   AED_REAL :: vvel
+   INTEGER  :: i
+!-------------------------------------------------------------------------------
+!BEGIN
+   IF (.NOT. data%simMeAdsorption) RETURN
+
+   vvel = zero_
+   IF ( data%id_compd_vvel > 0 ) &
+      vvel = _DIAG_VAR_(data%id_compd_vvel) / secs_per_day
+
+   DO i=1,data%num_comp
+      IF ( data%MeAdsorptionModel(i) == 0 ) CYCLE
+      IF ( data%component_linked(i) ) CYCLE
+      IF ( data%id_compd(i) <= 0 ) CYCLE
+
+      IF ( data%link_ads_vvel(i) ) THEN
+         mobility(data%id_compd(i)) = vvel
+      ELSE
+         mobility(data%id_compd(i)) = data%w_gch_ads(i)
+      ENDIF
+   ENDDO
+
+END SUBROUTINE aed_mobility_geochemistry
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 
