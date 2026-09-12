@@ -166,7 +166,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    ! Adsorption
    LOGICAL           :: simMeAdsorption = .FALSE.
    LOGICAL           :: ads_use_external_tss = .FALSE.
-   INTEGER           :: MeAdsorptionModel(MAX_GC_MINERALS) = 0
+   INTEGER           :: MeAdsorptionModel(MAX_GC_COMPONENTS) = 0
    LOGICAL           :: ads_use_pH   = .FALSE.
    AED_REAL          :: KMep(MAX_GC_COMPONENTS) = 1.05
    AED_REAL          :: theta_KMe   = 1.02
@@ -218,6 +218,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    component_link(:) = ''
    data%component_linked(:) = .FALSE.
    data%mineral_linked(:) = .FALSE.
+   data%id_compd(:) = -1
 
 ! Initialisation now done in declaration
 !  dis_initial = 0.0  ! default, overwritten by namelist
@@ -331,6 +332,10 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
          ! Register external state variable dependencies
          data%id_cdep(i) = aed_locate_variable( TRIM(component_link(i)) )
          data%component_linked(i) = .true.
+         IF ( simMeAdsorption .AND. MeAdsorptionModel(i)>0 )                   &
+            print *,'        WARNING: MeAdsorptionModel is set for linked ',   &
+                    'component ',TRIM(data%listDissTransVars(i)),              &
+                    ' - sorption of linked components is not supported'
       ENDIF
       IF( TRIM(data%listDissTransVars(i)) .EQ. 'FeII' ) data%id_feii = data%id_comp(i)
       IF( TRIM(data%listDissTransVars(i)) .EQ. 'FeIII') data%id_feiii= data%id_comp(i)
@@ -696,9 +701,11 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
 
      DO i=1,data%num_comp
         IF ( data%MeAdsorptionModel(i) ==0 ) CYCLE
+        IF ( data%component_linked(i) ) CYCLE   ! linked components have no _ads pool
+        IF ( data%id_compd(i) <= 0 ) CYCLE      ! no sorbed state was registered
 
       inDis = _STATE_VAR_(data%id_comp(i))
-      inPar = _STATE_VAR_(data%id_compd(i))  ! no adsorped for linked component ,..!
+      inPar = _STATE_VAR_(data%id_compd(i))
 
       ! Adjust local sorption coefficients for temperature or salinity  (PO4AdsorptionModel = 1 only)
       KMep = data%KMep(i) !* KMep_fT_fSal(data%theta_KMe, data%K_sal, salt, temp)
