@@ -127,6 +127,13 @@ MODULE aed_gcsolver
  DOUBLETYPE, PARAMETER :: gc_zero =  0.0_GCHP
  DOUBLETYPE, PARAMETER :: gc_one  =  1.0_GCHP
  DOUBLETYPE, PARAMETER :: minLogActivity = -30.0
+ !-- Smallest mineral (pure phase) mole amount that counts as "present".
+ !-- Tests against exact zero leave a phase that has dissolved to exhaustion
+ !-- holding float dust (~1e-36), which then reads as present: it blocks the
+ !-- convergence test and makes the f0 = delta/moles step limiter explode to
+ !-- ~1e35, annihilating the Newton step for every component.  cf PHREEQC's
+ !-- MIN_TOTAL (Phreeqc.cpp:494, = 1e-25) used the same way in model.cpp.
+ DOUBLETYPE, PARAMETER :: gc_mintotal = 1.0e-25_GCHP
 
  !-- Module Variables
  DOUBLETYPE, DIMENSION(:,:), ALLOCATABLE :: inequalityArray
@@ -1011,7 +1018,7 @@ CONTAINS
          !-- Pure phase
          IF(components(cList(componentIndex))%CompType == PUREPHASE) THEN
            !-- May be no moles and undersaturated:
-           IF(components(cList(componentIndex))%ppData%moles <= gc_zero .AND.  &
+           IF(components(cList(componentIndex))%ppData%moles <= gc_mintotal .AND. &
               components(cList(componentIndex))%Total -                        &
               components(cList(componentIndex))%Value > 1e-8 ) THEN
 
@@ -1053,7 +1060,7 @@ CONTAINS
 
           ineqCntr = ineqCntr + 1
 
-          IF(components(cList(componentIndex))%ppData%moles <= gc_zero) THEN
+          IF(components(cList(componentIndex))%ppData%moles <= gc_mintotal) THEN
             !-- del = -1 will ensure the solution can only precipitate
             deltaConc(nEQLeqs+ineqCntr) = -gc_one
           ELSE
@@ -1066,7 +1073,7 @@ CONTAINS
           !-- No moles and undersaturated
           IF (components(cList(componentIndex))%Total -                        &
               components(cList(componentIndex))%Value > 1e-8 .AND.             &
-              components(cList(componentIndex))%ppData%moles <= gc_zero) THEN
+              components(cList(componentIndex))%ppData%moles <= gc_mintotal) THEN
 
             inequalityArray(nOPTEqs+nEQLeqs+ineqCntr,residColumn) = gc_zero
             res((components(cList(componentIndex))%eqIndex))      = gc_zero
@@ -1148,7 +1155,7 @@ CONTAINS
      IF(nPPEqs > 0) THEN
          DO componentIndex = 1,nComps2Process
            IF(components(cList(componentIndex))%CompType==PUREPHASE) THEN
-             IF(components(cList(componentIndex))%ppData%moles <= gc_zero .AND.&
+             IF(components(cList(componentIndex))%ppData%moles <= gc_mintotal .AND. &
                 components(cList(componentIndex))%Total -  &
                   components(cList(componentIndex))%Value > 1e-8 ) THEN
 
@@ -1259,7 +1266,12 @@ CONTAINS
    failed = .FALSE.
 
    IF(nItern == ITMAX) THEN
-     PRINT *,'Non-convergence by ITMAX: ',nItern
+     !-- These reports are diagnostic only: the great majority of entries are
+     !-- pure phases that are tolerated a few lines below and never set failed.
+     !-- Printed unconditionally they swamp the run log (462 MB in one case),
+     !-- so gate them on verbosity.  cf PHREEQC, which gates the equivalent
+     !-- messages on debug_model.
+     IF (verbosity > 0) PRINT *,'Non-convergence by ITMAX: ',nItern
 
 !     CALL outputComponentData(components)
 
@@ -1267,15 +1279,19 @@ CONTAINS
        IF(ABS(inequalityArray(components(componentIndex)%eqIndex,residColumn))>&
                                                              convTolerance) THEN
 
-         print *,'Component Type & Name: ',                                    &
+         IF (verbosity > 0) THEN
+           print *,'Component Type & Name: ',                                  &
                                 components(cList(componentIndex))%CompType,    &
                 components(cList(componentIndex))%CompName
+         END IF
 
          IF(components(cList(componentIndex))%CompType == PUREPHASE)  THEN
 !           print *,' PurePhase non-convergence after ',nItern,' steps'
-         print *,' ->PP: ',  componentIndex,   cList(componentIndex),                  &
+           IF (verbosity > 0) THEN
+             print *,' ->PP: ',  componentIndex,   cList(componentIndex),      &
                 components(cList(componentIndex))%ppdata%moles,&
                 inequalityArray(components(componentIndex)%eqIndex,residColumn)
+           END IF
 
            IF(components(cList(componentIndex))%ppdata%moles < 1e-20) THEN
 !             print *,'  # moles <1e-20, so proceeding'
@@ -1679,8 +1695,19 @@ SUBROUTINE UpdateUnknownsWithdX(deltaConc,comps,cList)                        !
        cIndex = cList(componentIndex)
        IF(comps(cIndex)%CompType == PUREPHASE) THEN
 
+         !-- Clamp runaway deltas before they are used in the f0 ratio below.
+         !-- Without this a wild delta divided by a near-zero mole amount makes
+         !-- factor astronomically large, and factor scales down the step for
+         !-- EVERY component (see below), stalling the whole solve.
+         !-- cf PHREEQC model.cpp:2993-2999.
+         IF (deltaConc(componentIndex) < -1.0e8) THEN
+           deltaConc(componentIndex) = -10.0
+         ELSE IF (deltaConc(componentIndex) > 1.0e8) THEN
+           deltaConc(componentIndex) =  10.0
+         END IF
+
          !-- Check for over-dissolution
-         IF (comps(cIndex)%ppData%moles > gc_zero .AND.                        &
+         IF (comps(cIndex)%ppData%moles > gc_mintotal .AND.                    &
                     deltaConc(componentIndex) > comps(cIndex)%ppData%moles) THEN
 
            f0 = deltaConc(componentIndex) / comps(cIndex)%ppData%moles
@@ -1695,13 +1722,16 @@ SUBROUTINE UpdateUnknownsWithdX(deltaConc,comps,cList)                        !
 
          !-- Check for over-dissolution
          ELSE IF ( deltaConc(componentIndex) > gc_zero .AND.                   &
-                                    comps(cIndex)%ppData%moles <= gc_zero ) THEN
+                                comps(cIndex)%ppData%moles <= gc_mintotal ) THEN
            IF(verbosity > 5 ) THEN
               print *,'Dissolving mineral with 0 mass:',                       &
                  comps(cIndex)%CompName, deltaConc(componentIndex),            &
                  comps(cIndex)%ppData%moles
            END IF
            deltaConc(componentIndex) = gc_zero
+           !-- Phase is exhausted: clear the dust so it cannot re-enter the
+           !-- "present" branches on a later iteration.
+           comps(cIndex)%ppData%moles = gc_zero
 
          !-- Check over precipitation
      ELSE IF ( deltaConc(componentIndex) < gc_zero  .AND.                  &
@@ -1874,6 +1904,13 @@ SUBROUTINE UpdateUnknownsWithdX(deltaConc,comps,cList)                        !
 
        comps(cIndex)%ppData%moles = comps(cIndex)%ppData%moles -               &
                                                        deltaConc(componentIndex)
+
+       !-- A phase that has dissolved to exhaustion lands on float dust rather
+       !-- than exactly zero (values ~1e-36 observed).  Left in place that dust
+       !-- reads as "mineral present" everywhere above, which both blocks the
+       !-- convergence test and explodes the f0 step limiter.  Snap it out.
+       IF (comps(cIndex)%ppData%moles < gc_mintotal)                           &
+                                        comps(cIndex)%ppData%moles = gc_zero
 
 
      ! Ionic Strength
