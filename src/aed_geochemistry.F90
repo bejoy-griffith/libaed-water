@@ -461,7 +461,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    END DO
 
    data%id_noncon = aed_define_diag_variable( 'noncon_mh', &
-                         'niter', 'non-convergence status')
+                         '-', 'non-convergence flag (0=converged, 1=failed)')
 
    !----------------------------------------------------------------------------
 
@@ -583,6 +583,7 @@ SUBROUTINE aed_calculate_geochemistry(data,column,layer_idx)
        !-- Update FeII, O2, FeIII
        _FLUX_VAR_(data%id_feii) = _FLUX_VAR_(data%id_feii) + reduction - oxidation
 
+       !-- 4Fe++ + O2 + 4H+ -> 4Fe+++ + 2H2O : 1/4 mol O2 per mol Fe(II) oxidised
        _FLUX_VAR_(data%id_o_oxy) = _FLUX_VAR_(data%id_o_oxy) - oxidation *0.25
 
        _FLUX_VAR_(data%id_feiii) = _FLUX_VAR_(data%id_feiii) + oxidation - reduction
@@ -608,7 +609,8 @@ SUBROUTINE aed_calculate_geochemistry(data,column,layer_idx)
       !-- Update
       _FLUX_VAR_(data%id_h2s) = _FLUX_VAR_(data%id_h2s) + reduction - oxidation
 
-      _FLUX_VAR_(data%id_o_oxy) = _FLUX_VAR_(data%id_o_oxy) - oxidation * 0.25
+      !-- HS- + 2O2 -> SO4-- + H+ : 2 mol O2 consumed per mol S oxidised
+      _FLUX_VAR_(data%id_o_oxy) = _FLUX_VAR_(data%id_o_oxy) - oxidation * 2.0
 
       _FLUX_VAR_(data%id_so4) = _FLUX_VAR_(data%id_so4) + oxidation - reduction
 
@@ -789,10 +791,12 @@ SUBROUTINE aed_equilibrate_geochemistry(data,column,layer_idx)
      _DIAG_VAR_(data%id_c_pco2) = pco2
      !_DIAG_VAR_(data%id_gcdiag(6)) = pco2
    ENDIF
- ! IF( returnGCDerivedVector("NONCON",nc) > 0) THEN
- !   _DIAG_VAR_(data%id_noncon) = nc
- !   _DIAG_VAR_(data%id_gcdiag(5)) = nc
- ! ENDIF
+   !-- Per-cell solver failure flag: 0 = accepted, 1 = rejected. Written only
+   !-- to the dedicated noncon_mh diagnostic; the id_gcdiag() index for NONCON
+   !-- is configuration dependent so it must not be hardwired here.
+   IF( returnGCDerivedVector("NONCON",nc) > 0 .AND. data%simEq ) THEN
+     _DIAG_VAR_(data%id_noncon) = nc
+   ENDIF
 
 
 

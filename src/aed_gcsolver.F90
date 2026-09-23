@@ -4501,6 +4501,16 @@ END SUBROUTINE COLVEC
       END DO
     END DO
 
+    !-- NB these must be populated in the same order as tmpNames was built
+    !-- above (aqueous species, NONCON, SI_PPn, pCO2), otherwise derivedNames(i)
+    !-- and derivedGCList(i) describe different quantities.
+    DO i = 1,nGCDerivedVars
+      IF(TRIM(tmpNames(i)) == "NONCON") THEN
+          derivedGCList(gcCntr) = -998
+          gcCntr = gcCntr + 1
+      END IF
+    END DO
+
     DO i = 1,nGCDerivedVars
       IF(TRIM(tmpNames(i)) == "SI_PP1") THEN
           derivedGCList(gcCntr) = -1
@@ -4516,13 +4526,6 @@ END SUBROUTINE COLVEC
           gcCntr = gcCntr + 1
       ELSE IF(TRIM(tmpNames(i)) == "SI_PP5") THEN
           derivedGCList(gcCntr) = -5
-          gcCntr = gcCntr + 1
-      END IF
-    END DO
-
-    DO i = 1,nGCDerivedVars
-      IF(TRIM(tmpNames(i)) == "NONCON") THEN
-          derivedGCList(gcCntr) = -998
           gcCntr = gcCntr + 1
       END IF
     END DO
@@ -4570,13 +4573,27 @@ END SUBROUTINE COLVEC
 
    derivedVector = -999.9
 
+   !-- pCO2 (-999) and NONCON (-998) are located by their sentinel in
+   !-- derivedGCList rather than by position: NONCON is only second-to-last
+   !-- when DIC is simulated, so the old positional lookup returned a
+   !-- neighbouring species' value in any configuration without pCO2.
    IF(TRIM(Name) == "pCO2") THEN
-     derivedVector = REAL(derivedGCVals(nGCDerivedVars))
-     status = 1
+     DO i = 1,nGCDerivedVars
+       IF(derivedGCList(i) == -999) THEN
+         derivedVector = REAL(derivedGCVals(i))
+         status = 1
+         EXIT
+       END IF
+     END DO
 
    ELSE IF(TRIM(Name) == "NONCON") THEN
-     derivedVector = REAL(derivedGCVals(nGCDerivedVars-1))
-     status = 1
+     DO i = 1,nGCDerivedVars
+       IF(derivedGCList(i) == -998) THEN
+         derivedVector = REAL(derivedGCVals(i))
+         status = 1
+         EXIT
+       END IF
+     END DO
 
    ELSE
      DO i = 1,nGCDerivedVars
