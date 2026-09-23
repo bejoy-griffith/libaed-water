@@ -79,9 +79,10 @@ MODULE aed_geochemistry
       LOGICAL  :: component_linked(MAX_GC_COMPONENTS),mineral_linked(MAX_GC_MINERALS)
       LOGICAL  :: simEq
       AED_REAL :: Riron_red, theta_iron_red, Kiron_red
-      AED_REAL :: Riron_aox, Riron_box, theta_iron_ox
+      AED_REAL :: Riron_aox, Riron_box, theta_iron_ox, Kiron_ox
       AED_REAL :: Rsulf_red, theta_sulf_red, Ksulf_red
       AED_REAL :: Rsulf_ox, theta_sulf_ox, Ksulf_ox
+      INTEGER  :: iron_ox_model
       AED_REAL :: speciation_dt
       AED_REAL :: Fsed_gch(MAX_GC_COMPONENTS)
       AED_REAL :: Ksed_gch_o2(MAX_GC_COMPONENTS)
@@ -158,10 +159,26 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    AED_REAL          :: w_gch(MAX_GC_MINERALS)
    AED_REAL          :: pH_initial = 7.5
    AED_REAL          :: pe_initial = 8.0
-   AED_REAL          :: Riron_red, theta_iron_red, Kiron_red
-   AED_REAL          :: Riron_aox, Riron_box, theta_iron_ox
-   AED_REAL          :: Rsulf_red, theta_sulf_red, Ksulf_red
-   AED_REAL          :: Rsulf_ox, theta_sulf_ox, Ksulf_ox
+   !-- Kinetic redox parameters. These are only referenced when the matching
+   !-- couple is active (see setupWCRedoxConfiguration), but they must still be
+   !-- initialised here: without a default an omitted namelist entry leaves the
+   !-- variable undefined rather than zero.
+   AED_REAL          :: Riron_red      = zero_  ! /day  FeIII -> FeII (biotic)
+   AED_REAL          :: theta_iron_red = one_   ! 1.0 => no T correction
+   AED_REAL          :: Kiron_red      = 100.0  ! mmol/m3 O2 inhibition of redn
+   AED_REAL          :: Riron_aox      = zero_  ! /day  abiotic FeII oxidation
+   AED_REAL          :: Riron_box      = zero_  ! /day  biotic  FeII oxidation
+   AED_REAL          :: theta_iron_ox  = one_   ! 1.0 => no T correction
+   AED_REAL          :: Kiron_ox       = 100.0  ! mmol/m3 O2 half-sat of oxidn
+   AED_REAL          :: Rsulf_red      = zero_  ! /day  SO4 -> H2S
+   AED_REAL          :: theta_sulf_red = one_   ! 1.0 => no T correction
+   AED_REAL          :: Ksulf_red      = 100.0  ! mmol/m3 O2 inhibition of redn
+   AED_REAL          :: Rsulf_ox       = zero_  ! /day  H2S -> SO4
+   AED_REAL          :: theta_sulf_ox  = one_   ! 1.0 => no T correction
+   AED_REAL          :: Ksulf_ox       = 100.0  ! mmol/m3 O2 half-sat of oxidn
+   !-- 0 = biotic only, pH independent (default, legacy behaviour)
+   !-- 1 = Singer-Stumm speciation based abiotic oxidation, plus the biotic term
+   INTEGER           :: iron_ox_model  = 0
    CHARACTER(len=64) :: geochem_file = ''
    CHARACTER(len=64) :: dis_components(MAX_GC_COMPONENTS) = ''
    CHARACTER(len=64) :: component_link(MAX_GC_COMPONENTS) = ''
@@ -202,7 +219,8 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
                     dis_initial, num_minerals, the_minerals, mineral_link,     &
                     w_gch, min_initial, pH_initial, speciesOutput, simEq,      &
                     Riron_red, theta_iron_red, Kiron_red,                      &
-                    Riron_aox, Riron_box, theta_iron_ox,                       &
+                    Riron_aox, Riron_box, theta_iron_ox, Kiron_ox,             &
+                    iron_ox_model,                                             &
                     Rsulf_red, theta_sulf_red, Ksulf_red,                      &
                     Rsulf_ox, theta_sulf_ox, Ksulf_ox,                         &
                     ph_link, inflow_pH_update, pco2_link, diag_level, &
@@ -261,6 +279,7 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
    data%Riron_red = Riron_red             ; data%Kiron_red= Kiron_red
    data%theta_iron_red= theta_iron_red    ; data%theta_iron_ox=theta_iron_ox
    data%Riron_aox=Riron_aox/ secs_per_day ; data%Riron_box=Riron_box/ secs_per_day
+   data%Kiron_ox = Kiron_ox               ; data%iron_ox_model = iron_ox_model
 
    data%Rsulf_red = Rsulf_red             ; data%Ksulf_red= Ksulf_red
    data%theta_sulf_red= theta_sulf_red    ; data%theta_sulf_ox=theta_sulf_ox
@@ -302,6 +321,27 @@ SUBROUTINE aed_define_geochemistry(data, namlst)
 
    data%num_comp = nDissTransportables
    data%num_mins = nPartTransportables
+
+   !-- Report which kinetic redox couples the component set has activated. Each
+   !-- requires BOTH of its redox states to be configured components, and is
+   !-- otherwise skipped entirely - previously without saying so, which made a
+   !-- missing member look like a rate-constant problem.
+   print *,"        aed_geochemistry kinetic redox couples:"
+   CALL reportRedoxCouple("iron     (FeII/FeIII)", simIronRedox)
+   CALL reportRedoxCouple("sulfur   (H2S/SO4)   ", simSulfurRedox)
+   CALL reportRedoxCouple("mangan   (MnII/MnIV) ", simManganRedox)
+   CALL reportRedoxCouple("arsenic  (AsIII/AsV) ", simArsenicRedox)
+   CALL reportRedoxCouple("carbon   (CH4/CO3)   ", simCarbonRedox)
+   IF ( simIronRedox .AND. iron_ox_model == 1 ) THEN
+      print *,"          FeII oxidation: Singer-Stumm speciation (pH dependent)"
+      print *,"          WARNING! iron_ox_model=1 is not yet mass balance verified"
+   ELSEIF ( simIronRedox ) THEN
+      print *,"          FeII oxidation: biotic Monod only (pH INDEPENDENT)"
+   ENDIF
+   IF ( .NOT. (simIronRedox .OR. simSulfurRedox .OR. simManganRedox .OR.       &
+               simArsenicRedox .OR. simCarbonRedox) ) THEN
+      print *,"          none active: geochemistry is equilibrium-only"
+   ENDIF
 
    !----------------------------------------------------------------------------
    ! Initialise the module level geochemical values ready for the registration
@@ -954,20 +994,37 @@ END SUBROUTINE aed_inflow_update_geochemistry
    kb = data%Riron_box
    kf = data%Riron_aox
 
-   status = returnGCDerivedVector("Fe+2      ", Fe_2)
-   IF(status/=1)Fe_2 = zero_
-   status = returnGCDerivedVector("FeOH+     ", FeOH)
-   IF(status/=1)FeOH = zero_
-   status = returnGCDerivedVector("Fe(OH)2   ", FeOH2)
-   IF(status/=1)FeOH2 = zero_
+   IF ( data%iron_ox_model == 1 ) THEN
+      !-- Singer-Stumm: abiotic Fe(II) oxidation is first order in O2 and is
+      !-- summed over the hydrolysis series, since FeOH+ and Fe(OH)2 oxidise
+      !-- orders of magnitude faster than Fe+2. The pH dependence is implicit,
+      !-- carried entirely by the speciation - which is why the rate falls by
+      !-- ~10^6 from pH 7 to pH 3 and keeps Fe(II) mobile in acid drainage.
+      !-- The biotic term kb is retained: it is what dominates at low pH.
+      !-- CAUTION: restored verbatim from the long commented out original and
+      !-- NOT yet mass balance verified. The speciation terms carry moles from
+      !-- allSpecies scaled by FEII_MolWeight*1e3, while the biotic term uses
+      !-- ironII straight from the state variable in mmol/m3 - confirm the two
+      !-- bases agree before trusting a calibration against Riron_aox.
+      status = returnGCDerivedVector("Fe+2      ", Fe_2)
+      IF(status/=1)Fe_2 = zero_
+      status = returnGCDerivedVector("FeOH+     ", FeOH)
+      IF(status/=1)FeOH = zero_
+      status = returnGCDerivedVector("Fe(OH)2   ", FeOH2)
+      IF(status/=1)FeOH2 = zero_
 
-   !   OxidRate = oxygen *  (                               &
-   !              kf*ko*Fe_2  *FEII_MolWeight*1e3  +        &
-   !              kf*k1*FeOH  *FEII_MolWeight*1e3  +        &
-   !              kf*k2*FeOH2 *FEII_MolWeight*1e3  +        &
-   !              kb*ironII ) * (data%theta_iron_ox**(temp-20.0))
-
-   OxidRate = kb*ironII * (data%theta_iron_ox**(temp-20.0)) * oxygen/(oxygen+100.)
+      OxidRate = oxygen *  (                                                   &
+                 kf*ko*Fe_2  *FEII_MolWeight*1e3  +                            &
+                 kf*k1*FeOH  *FEII_MolWeight*1e3  +                            &
+                 kf*k2*FeOH2 *FEII_MolWeight*1e3  +                            &
+                 kb*ironII ) * (data%theta_iron_ox**(temp-20.0))
+   ELSE
+      !-- Biotic only, Monod in O2. NB pH independent: Fe(II) oxidises at the
+      !-- same rate at pH 3 as at pH 7, which is not realistic for acid
+      !-- sulfate systems. Use iron_ox_model = 1 where that matters.
+      OxidRate = kb*ironII * (data%theta_iron_ox**(temp-20.0))                 &
+                           * oxygen/(data%Kiron_ox + oxygen)
+   ENDIF
 
  END FUNCTION calcIronOxidation
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -1229,6 +1286,28 @@ PURE AED_REAL FUNCTION KMe_fT_fSal(theta_KMe, K_sal, sal, temp)
    KMe_fT_fSal = fT * fSal
 
 END FUNCTION KMe_fT_fSal
+!+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+!###############################################################################
+SUBROUTINE reportRedoxCouple(label, active)
+!-------------------------------------------------------------------------------
+! Print whether one kinetic redox couple was activated by the component set
+!-------------------------------------------------------------------------------
+!ARGUMENTS
+   CHARACTER(len=*),INTENT(in) :: label
+   LOGICAL,INTENT(in)          :: active
+!
+!-------------------------------------------------------------------------------
+!BEGIN
+   !-- label is space padded by the caller for alignment, so do not TRIM it
+   IF ( active ) THEN
+      print *,"          ",label," : ACTIVE"
+   ELSE
+      print *,"          ",label," : off (both redox states not configured)"
+   ENDIF
+
+END SUBROUTINE reportRedoxCouple
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 

@@ -3345,6 +3345,12 @@ END SUBROUTINE UpdateUnknownsWithdX
     !-- Local
     INTEGER  :: nComp, cIndex
 
+    !-- NB each search below must scan the whole component list: use CYCLE, not
+    !-- EXIT. A couple is only detected if both members are found, so leaving
+    !-- the loop early on either member makes detection depend on the order the
+    !-- components happen to appear in dis_components - e.g. SO4 listed before
+    !-- H2S silently left simSulfurRedox .FALSE. with both configured.
+
     nComp = SIZE(comps)
 
     !--------------------------------------------------
@@ -3363,7 +3369,7 @@ END SUBROUTINE UpdateUnknownsWithdX
       IF( TRIM(comps(cIndex)%EltName) == "FEIII" .OR. &
           TRIM(comps(cIndex)%EltName) == "FeIII" ) THEN
            FEIII = comps(cIndex)%wqIndex
-           EXIT
+           CYCLE
       END IF
 
     END DO
@@ -3380,6 +3386,7 @@ END SUBROUTINE UpdateUnknownsWithdX
     !--------------------------------------------------
     !-- Next search for MANGANESE redox couple
     MNII  = -999
+    MNIV  = -999
     MNVII = -999
     DO cIndex = 1, nComp
 
@@ -3395,7 +3402,7 @@ END SUBROUTINE UpdateUnknownsWithdX
           TRIM(comps(cIndex)%EltName) == "MnIV" ) THEN
 
            MNIV = comps(cIndex)%wqIndex
-           EXIT
+           CYCLE
       END IF
 
       !-- Search for MnVII
@@ -3403,7 +3410,7 @@ END SUBROUTINE UpdateUnknownsWithdX
           TRIM(comps(cIndex)%EltName) == "MnVII" ) THEN
 
            MNVII = comps(cIndex)%wqIndex
-           EXIT
+           CYCLE
       END IF
 
     END DO
@@ -3430,7 +3437,7 @@ END SUBROUTINE UpdateUnknownsWithdX
       !-- Search for SO4
       IF( TRIM(comps(cIndex)%EltName) == "SO4" ) THEN
            SO4 = comps(cIndex)%wqIndex
-           EXIT
+           CYCLE
       END IF
 
     END DO
