@@ -238,7 +238,7 @@ SUBROUTINE aed_define_carbon(data, namlst)
    read(namlst,nml=aed_carbon,iostat=status)
    IF (status /= 0) THEN
       print *,'Error reading namelist for &aed_carbon'
-      STOP
+      ERROR STOP 1
    ENDIF
 
    !# Update configuration flags after options read in
@@ -457,9 +457,12 @@ SUBROUTINE aed_calculate_carbon(data,column,layer_idx)
       _FLUX_VAR_(data%id_dic) = _FLUX_VAR_(data%id_dic) + (ch4*ch4oxidation)
       _FLUX_VAR_(data%id_ch4) = _FLUX_VAR_(data%id_ch4) + (-ch4*ch4oxidation)
 
-      !# If a linked oxygen pool is present, take oxidation from it assume 1:1 stoichometry
+      !# FIX 2026-08-29: O2 was removed at 1:1 with the CH4 oxidised. Aerobic
+      !# methane oxidation is CH4 + 2 O2 -> CO2 + 2 H2O, so 2 mol O2 are needed
+      !# per mol CH4. This halved the oxygen demand of methane oxidation.
+      !# aed_methane.F90 (~L462) already uses the correct 2.0 factor.
       IF (data%use_oxy) THEN
-         _FLUX_VAR_(data%id_oxy) = _FLUX_VAR_(data%id_oxy) - ch4*ch4oxidation  ! *(32./12.) not mass
+         _FLUX_VAR_(data%id_oxy) = _FLUX_VAR_(data%id_oxy) - 2.0*ch4*ch4oxidation  ! *(32./12.) not mass
       ENDIF
 
       !# Export diagnostic variables
