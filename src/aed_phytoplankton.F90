@@ -1044,6 +1044,35 @@ SUBROUTINE aed_calculate_phytoplankton(data,column,layer_idx)
 
    !---------------------------------------------------------------------------+
    ! Check uptake values for availability to prevent -ve numbers, and report
+   !
+   ! 2026-08-29 - THIS WHOLE BLOCK WAS DEAD, AND WOULD HAVE BEEN WRONG IF IT HAD FIRED.
+   ! Three compounding faults, all fixed below:
+   !
+   !  1. SIGN OF THE TEST. Every uptake array is NEGATIVE by construction - they are sinks:
+   !       aed_bio_utils.F90:343   uptake(c) = - (theX_pcon/npup) * primprod
+   !       aed_bio_utils.F90:354   uptake(1) = -tmpary1 * phyto_fP(...)
+   !       aed_bio_utils.F90:418-419  uptake(1) = tmpary1 * phyto_fN(...) ; uptake(1) = -uptake(1)
+   !       aed_phytoplankton.F90:1053 cuptake(phy_i) = -primprod(phy_i) * phy
+   !     while pup/no3up/nh4up/cup/rsiup are concentrations >= 0. So `upTot >= pup` compared a
+   !     negative against a positive and was ALWAYS FALSE. None of these limiters ever fired.
+   !     The test is on the MAGNITUDE of demand: -upTot >= pup.
+   !
+   !  2. SIGN OF THE RESCALE. `(pup*0.99/dtlim) * (uptake/upTot)` is positive when both uptake and
+   !     upTot are negative, so had the test ever fired it would have flipped uptake from a sink
+   !     into a SOURCE - worse than the problem it was written to prevent.
+   !
+   !  3. UNITS. uptake is mmol/m3/s and upTot is mmol/m3 (it carries a *dtlim), so uptake/upTot is
+   !     1/s; multiplying by (pup*0.99/dtlim), itself mmol/m3/s, gives mmol/m3/s^2 - off by dtlim.
+   !
+   ! All three collapse into one correction:  -(pup*0.99) * (uptake/upTot)
+   ! which is negative, has units mmol/m3/s, and sums over the groups to exactly -pup*0.99/dtlim,
+   ! i.e. total demand capped at 99% of what is available over the limiter window.
+   !
+   ! Why it matters here: with ode_method = 1 (300 s Euler) and repair_state = .true., an uptake
+   ! larger than the standing stock drove the state negative and the repair clamped it at zero -
+   ! a SILENT NUTRIENT SOURCE. In a closed oligotrophic mesocosm, where the initial pools are
+   ! 3.0 NH4 / 2.0 NO3 / 0.05 FRP mmol/m3, that is most of the run.
+   !---------------------------------------------------------------------------+
 
    ! pup   - p available
    ! no3up - no3 available
@@ -1053,33 +1082,33 @@ SUBROUTINE aed_calculate_phytoplankton(data,column,layer_idx)
 
    IF (data%do_Puptake) THEN
       upTot = sum(puptake(:,1))*dtlim
-      IF ( abs(upTot) > 1.e-10 .and. upTot >= pup ) THEN
+      IF ( abs(upTot) > 1.e-10 .and. -upTot >= pup ) THEN
          DO phy_i=1,data%num_phytos
-            puptake(phy_i,1) = (pup*0.99/dtlim) * (puptake(phy_i,1)/upTot)
+            puptake(phy_i,1) = -(pup*0.99) * (puptake(phy_i,1)/upTot)
          ENDDO
       ENDIF
    ENDIF
 
    IF (data%do_Nuptake) THEN
       upTot = sum(nuptake(:,1))*dtlim
-      IF ( abs(upTot) > 1.e-10 .and. upTot >= no3up ) THEN
+      IF ( abs(upTot) > 1.e-10 .and. -upTot >= no3up ) THEN
          DO phy_i=1,data%num_phytos
-            nuptake(phy_i,1) = (no3up*0.99/dtlim) * (nuptake(phy_i,1)/upTot)
+            nuptake(phy_i,1) = -(no3up*0.99) * (nuptake(phy_i,1)/upTot)
          ENDDO
       ENDIF
 
       upTot = sum(nuptake(:,2))*dtlim
-      IF ( abs(upTot) > 1.e-10 .and. upTot >= nh4up ) THEN
+      IF ( abs(upTot) > 1.e-10 .and. -upTot >= nh4up ) THEN
          DO phy_i=1,data%num_phytos
-            nuptake(phy_i,2) = (nh4up*0.99/dtlim) * (nuptake(phy_i,2)/upTot)
+            nuptake(phy_i,2) = -(nh4up*0.99) * (nuptake(phy_i,2)/upTot)
          ENDDO
       ENDIF
    ENDIF
    IF (data%do_Cuptake) THEN
       upTot = sum(cuptake)*dtlim
-      IF ( abs(upTot) > 1.e-10 .and. upTot >= cup ) THEN
+      IF ( abs(upTot) > 1.e-10 .and. -upTot >= cup ) THEN
          DO phy_i=1,data%num_phytos
-            cuptake(phy_i) = (cup*0.99/dtlim) * (cuptake(phy_i)/upTot)
+            cuptake(phy_i) = -(cup*0.99) * (cuptake(phy_i)/upTot)
          ENDDO
       ENDIF
    ENDIF
@@ -1088,9 +1117,9 @@ SUBROUTINE aed_calculate_phytoplankton(data,column,layer_idx)
 !  ENDIF
    IF (data%do_Siuptake) THEN
       upTot = sum(siuptake)*dtlim
-      IF ( abs(upTot) > 1.e-10 .and. upTot >= rsiup ) THEN
+      IF ( abs(upTot) > 1.e-10 .and. -upTot >= rsiup ) THEN
          DO phy_i=1,data%num_phytos
-            siuptake(phy_i) = (rsiup*0.99/dtlim) * (siuptake(phy_i)/upTot)
+            siuptake(phy_i) = -(rsiup*0.99) * (siuptake(phy_i)/upTot)
          ENDDO
       ENDIF
    ENDIF
